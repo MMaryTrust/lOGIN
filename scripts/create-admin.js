@@ -7,7 +7,10 @@ const [emailArg, nameArg = 'Mannin Admin'] = process.argv.slice(2);
 const email = emailArg?.trim().toLowerCase();
 const password = process.env.ADMIN_PASSWORD;
 
-if (!email || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(email) || email.length > 254) {
+if (!pool) {
+  console.error('Set DATABASE_URL in .env to create a persistent PostgreSQL admin. Local demo login works without a database.');
+  process.exitCode = 1;
+} else if (!email || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(email) || email.length > 254) {
   console.error('Usage: npm run create-admin -- admin@example.com [Display Name]');
   process.exitCode = 1;
 } else if (!password || password.length < 8 || password.length > 12) {
@@ -29,6 +32,6 @@ if (!email || !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9
     console.error(`Could not create admin: ${error.message}`);
     process.exitCode = 1;
   } finally {
-    await pool.end();
+    await pool?.end();
   }
 }

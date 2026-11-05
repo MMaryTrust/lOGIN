@@ -2,20 +2,21 @@ import 'dotenv/config';
 import pg from 'pg';
 
 const { Pool } = pg;
+const connectionString = process.env.DATABASE_URL;
 
-if (!process.env.DATABASE_URL) {
-  throw new Error('DATABASE_URL is required. Copy .env.example to .env and configure PostgreSQL.');
-}
-
-export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+export const pool = connectionString ? new Pool({
+  connectionString,
   ssl: process.env.DATABASE_SSL === 'true' ? true : undefined,
   max: 10,
   idleTimeoutMillis: 30_000,
   connectionTimeoutMillis: 5_000,
-});
+}) : null;
 
 export async function initializeDatabase() {
+  if (!pool) {
+    throw new Error('DATABASE_URL is required for PostgreSQL mode.');
+  }
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app_users (
       id UUID PRIMARY KEY,

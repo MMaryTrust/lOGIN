@@ -18,7 +18,12 @@ const app = Fastify({
 const root = path.dirname(fileURLToPath(import.meta.url));
 const sessionCookie = 'mannin_session';
 const sessionLifetimeMs = 7 * 24 * 60 * 60 * 1000;
+const demoMode = !process.env.DATABASE_URL;
+const demoEmail = (process.env.DEMO_EMAIL || 'admin@sample.com').trim().toLowerCase();
+const demoPassword = process.env.DEMO_PASSWORD || 'sample123';
+const demoSessions = new Set();
 const dummyHash = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
+const demoPasswordHash = demoMode ? await bcrypt.hash(demoPassword, 12) : null;
 
 await app.register(helmet, {
   contentSecurityPolicy: {
@@ -57,6 +62,15 @@ function isValidEmail(email) {
 }
 
 function checkOrigin(request, reply) {
+  if (demoMode) {
+    const remoteAddress = request.ip.replace(/^::ffff:/, '');
+    const localAddress = remoteAddress === '127.0.0.1' || remoteAddress === '::1';
+    const localHost = ['localhost', '127.0.0.1', '[::1]'].includes(request.hostname);
+    if (!localAddress || !localHost) {
+      reply.code(403).send({ error: 'Test login is available only on this computer.' });
+      return false;
+    }
+  }
   const origin = request.headers.origin;
   if (!origin) return true;
   const expectedOrigin = process.env.APP_ORIGIN || `${request.protocol}://${request.headers.host}`;
@@ -90,37 +104,58 @@ app.post('/api/login', {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
-  const { rows } = await pool.query(
-    'SELECT id, email, password_hash, display_name, role FROM app_users WHERE email = $1',
-    [normalizedEmail],
-  );
-  const user = rows[0];
-  const validPassword = await bcrypt.compare(password, user?.password_hash || dummyHash);
-  if (!user || !validPassword) {
-    return reply.code(401).send({ error: 'Email or password is incorrect.' });
+  let user;
+  if (demoMode) {
+    const validPassword = await bcrypt.compare(password, demoPasswordHash);
+    if (normalizedEmail !== demoEmail || !validPassword) {
+      return reply.code(401).send({ error: 'Email or password is incorrect.' });
+    }
+    user = { id: 'local-test-admin', email: demoEmail, name: 'Mannin Admin', role: 'admin' };
+  } else {
+    const { rows } = await pool.query(
+      'SELECT id, email, password_hash, display_name, role FROM app_users WHERE email = $1',
+      [normalizedEmail],
+    );
+    const account = rows[0];
+    const validPassword = await bcrypt.compare(password, account?.password_hash || dummyHash);
+    if (!account || !validPassword) {
+      return reply.code(401).send({ error: 'Email or password is incorrect.' });
+    }
+    user = {
+      id: account.id,
+      email: account.email,
+      name: account.display_name || account.email,
+      role: account.role,
+    };
   }
 
   const token = randomBytes(32).toString('base64url');
-  await pool.query(
-    `INSERT INTO app_sessions (token_hash, user_id, expires_at)
-     VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
-    [hashToken(token), user.id],
-  );
-  await pool.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
+  if (demoMode) {
+    demoSessions.add(hashToken(token));
+  } else {
+    await pool.query(
+      `INSERT INTO app_sessions (token_hash, user_id, expires_at)
+       VALUES ($1, $2, NOW() + INTERVAL '7 days')`,
+      [hashToken(token), user.id],
+    );
+    await pool.query('DELETE FROM app_sessions WHERE expires_at <= NOW()');
+  }
   reply.setCookie(sessionCookie, token, cookieOptions());
-  return {
-    user: {
-      id: user.id,
-      email: user.email,
-      name: user.display_name || user.email,
-      role: user.role,
-    },
-  };
+  return { user };
 });
 
 app.get('/api/session', async (request, reply) => {
   try {
-    const user = await findSession(request.cookies[sessionCookie]);
+    if (demoMode && !checkOrigin(request, reply)) return;
+    const token = request.cookies[sessionCookie];
+    if (demoMode) {
+      return {
+        user: token && demoSessions.has(hashToken(token))
+          ? { id: 'local-test-admin', email: demoEmail, name: 'Mannin Admin', role: 'admin' }
+          : null,
+      };
+    }
+    const user = await findSession(token);
     if (!user) {
       reply.clearCookie(sessionCookie, cookieOptions());
       return { user: null };
@@ -136,7 +171,8 @@ app.post('/api/logout', async (request, reply) => {
   if (!checkOrigin(request, reply)) return;
   const token = request.cookies[sessionCookie];
   if (token) {
-    await pool.query('DELETE FROM app_sessions WHERE token_hash = $1', [hashToken(token)]);
+    if (demoMode) demoSessions.delete(hashToken(token));
+    else await pool.query('DELETE FROM app_sessions WHERE token_hash = $1', [hashToken(token)]);
   }
   reply.clearCookie(sessionCookie, cookieOptions());
   return { ok: true };
@@ -153,17 +189,28 @@ app.setErrorHandler((error, request, reply) => {
 });
 
 async function start() {
-  await initializeDatabase();
+  if (demoMode) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Refusing to start production without DATABASE_URL; local demo mode is not for deployment.');
+    }
+    if (!/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(demoEmail)
+      || demoPassword.length < 8 || demoPassword.length > 12) {
+      throw new Error('DEMO_EMAIL must be valid and DEMO_PASSWORD must be 8–12 characters.');
+    }
+    app.log.warn('PostgreSQL is not configured; starting localhost-only, in-memory test login.');
+  } else {
+    await initializeDatabase();
+  }
   await app.listen({
     port: Number(process.env.PORT || 3000),
-    host: process.env.HOST || '0.0.0.0',
+    host: process.env.HOST || (demoMode ? '127.0.0.1' : '0.0.0.0'),
   });
 }
 
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, async () => {
     await app.close();
-    await pool.end();
+    await pool?.end();
     process.exit(0);
   });
 }
@@ -171,6 +218,6 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
 start().catch(async (error) => {
   app.log.error(error);
   await app.close();
-  await pool.end();
+  await pool?.end();
   process.exit(1);
 });
