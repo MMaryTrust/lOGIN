@@ -1,25 +1,31 @@
 # Mannin Suvai login
 
-This small app contains only a sign-in screen and the home page shown after a successful sign-in. Authentication uses Supabase Auth; it does not create accounts or provide a demo bypass.
-
-The email field uses browser email validation. Passwords are limited to 12 characters.
-
-## Configure Supabase
-
-1. Open `config.js`.
-2. Set `SUPABASE_URL` to the Supabase project URL.
-3. Set `SUPABASE_ANON_KEY` to the anon/public key from Project Settings → API.
-4. Do not put a `service_role` key or database password in this client-side app.
-5. In Supabase Auth, enable Email/Password sign-in and create or invite the accounts that should be able to sign in.
-
-Until both values are configured, the sign-in form stays disabled and explains what is missing.
+This app provides only an email/password login and a home page. The API uses Fastify, stores users and sessions in PostgreSQL, and hashes passwords with bcrypt. There is no public registration or demo login.
 
 ## Run locally
 
-Serve this folder over HTTP rather than opening `index.html` directly. For example, with Python installed:
+Requires Node.js 20+ and PostgreSQL.
+
+1. Install packages: `npm install`
+2. Copy `.env.example` to `.env` (PowerShell: `Copy-Item .env.example .env`).
+3. Set `DATABASE_URL` to your PostgreSQL connection string. Set `DATABASE_SSL=true` when your database provider requires TLS.
+4. Start the app: `npm start`
+5. Open `http://localhost:3000`.
+
+The server creates the `app_users` and `app_sessions` tables on startup.
+
+## Create the first admin
+
+Set a temporary `ADMIN_PASSWORD` in your local, git-ignored `.env` file. Use a password of 8 to 12 characters. Then run:
 
 ```powershell
-python -m http.server 8000
+npm run create-admin -- admin@sample.com "Mannin Admin"
 ```
 
-Then open `http://localhost:8000`. The Supabase JavaScript client is loaded from `esm.sh` when the app is configured, so the browser needs an internet connection.
+The command stores only a bcrypt password hash and will not overwrite an existing account. Remove `ADMIN_PASSWORD` from `.env` after account creation. Do not commit `.env`; choose a unique password before using the account on a public deployment.
+
+## Deployment notes
+
+- Set `NODE_ENV=production` so the session cookie is Secure; serve the app over HTTPS.
+- Set `APP_ORIGIN` to the exact public origin and `TRUST_PROXY=true` when behind a trusted reverse proxy.
+- Keep `DATABASE_URL` and all passwords out of source control. The app uses a random, HttpOnly, SameSite=Strict cookie and stores only a hash of each session token in PostgreSQL.

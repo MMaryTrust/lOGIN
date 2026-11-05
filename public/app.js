@@ -1,7 +1,4 @@
-import { SUPABASE_ANON_KEY, SUPABASE_URL } from './config.js';
-
 const app = document.querySelector('#app');
-let supabase;
 
 const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
   '&': '&amp;',
@@ -12,7 +9,6 @@ const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (char) => ({
 }[char]));
 
 function renderSignIn(message = '') {
-  const configured = Boolean(SUPABASE_URL.trim() && SUPABASE_ANON_KEY.trim());
   app.innerHTML = `
     <section class="login-layout">
       <div class="login-story">
@@ -33,14 +29,13 @@ function renderSignIn(message = '') {
           <p class="eyebrow">Welcome back</p>
           <h2>Sign in</h2>
           <p class="muted">Use your Mannin Suvai account to continue.</p>
-          ${!configured ? '<p class="notice" role="status">Sign-in is not connected yet. Add your Supabase project URL and anon/public key in <code>config.js</code>.</p>' : ''}
           <label for="email">Email address</label>
-          <input id="email" name="email" type="email" maxlength="254" autocomplete="username" required ${configured ? '' : 'disabled'}>
+          <input id="email" name="email" type="email" maxlength="254" autocomplete="username" required>
           <label for="password">Password</label>
-          <input id="password" name="password" type="password" maxlength="12" autocomplete="current-password" aria-describedby="password-help" required ${configured ? '' : 'disabled'}>
-          <p class="field-help" id="password-help">Password must be 12 characters or fewer.</p>
+          <input id="password" name="password" type="password" minlength="8" maxlength="12" autocomplete="current-password" aria-describedby="password-help" required>
+          <p class="field-help" id="password-help">Password must be 8–12 characters.</p>
           <p class="form-message" id="form-message" role="alert">${escapeHtml(message)}</p>
-          <button class="button" type="submit" ${configured ? '' : 'disabled'}>Sign in</button>
+          <button class="button" type="submit">Sign in</button>
           <p class="small muted">Need access? Contact your Mannin Suvai administrator.</p>
         </form>
       </div>
@@ -51,9 +46,8 @@ function renderSignIn(message = '') {
   form.addEventListener('submit', signIn);
 }
 
-function renderHome(session) {
-  const user = session.user;
-  const name = user.user_metadata?.full_name || user.user_metadata?.name || user.email || 'there';
+function renderHome(user) {
+  const name = user.name || user.email || 'there';
   app.innerHTML = `
     <header class="site-header">
       <a class="brand" href="./" aria-label="Mannin Suvai home">
@@ -102,15 +96,17 @@ async function signIn(event) {
   showMessage('Signing in…');
 
   try {
-    const { error } = await supabase.auth.signInWithPassword({
-      email: String(values.get('email')).trim(),
-      password: String(values.get('password')),
+    const response = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: String(values.get('email')).trim(),
+        password: String(values.get('password')),
+      }),
     });
-
-    if (error) {
-      showMessage(error.message || 'Unable to sign in. Check your email and password.');
-      button.disabled = false;
-    }
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Unable to sign in.');
+    renderHome(result.user);
   } catch (error) {
     showMessage(`Unable to sign in: ${error.message}`);
     button.disabled = false;
@@ -121,8 +117,10 @@ async function signOut() {
   const button = document.querySelector('#sign-out');
   button.disabled = true;
   try {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    const response = await fetch('/api/logout', { method: 'POST' });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Unable to sign out.');
+    renderSignIn();
   } catch (error) {
     button.disabled = false;
     document.querySelector('#home-message').textContent = `Unable to sign out: ${error.message}`;
@@ -130,25 +128,18 @@ async function signOut() {
 }
 
 async function start() {
-  if (!SUPABASE_URL.trim() || !SUPABASE_ANON_KEY.trim()) {
+  try {
+    const response = await fetch('/api/session');
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Unable to check your session.');
+    if (result.user) {
+      renderHome(result.user);
+      return;
+    }
     renderSignIn();
-    return;
+  } catch (error) {
+    renderSignIn(`Unable to connect to the login server: ${error.message}`);
   }
-
-  const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
-  supabase = createClient(SUPABASE_URL.trim(), SUPABASE_ANON_KEY.trim());
-  supabase.auth.onAuthStateChange((_event, session) => {
-    if (session) renderHome(session);
-    else renderSignIn();
-  });
-
-  const { data, error } = await supabase.auth.getSession();
-  if (error) {
-    renderSignIn(error.message);
-    return;
-  }
-  if (data.session) renderHome(data.session);
-  else renderSignIn();
 }
 
 start().catch((error) => {
